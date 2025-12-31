@@ -6,6 +6,7 @@ use axum::{
     Json, Router,
 };
 use chrono::{DateTime, Utc};
+
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqliteSynchronous};
@@ -141,6 +142,7 @@ async fn styles_css() -> impl IntoResponse {
     )
 }
 
+
 async fn fallback(uri: axum::http::Uri) -> impl IntoResponse {
     match uri.path() {
         path if path.ends_with("app.js") => app_js().await.into_response(),
@@ -148,6 +150,8 @@ async fn fallback(uri: axum::http::Uri) -> impl IntoResponse {
         _ => index().await.into_response(),
     }
 }
+
+=======
 
 async fn create_check(
     State(state): State<Arc<AppState>>,
