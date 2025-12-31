@@ -1,11 +1,12 @@
 use axum::{
     extract::{Path, State},
     http::StatusCode,
+    response::{Html, IntoResponse},
     routing::{get, post},
     Json, Router,
 };
 use chrono::{DateTime, Utc};
-use dotenvy::dotenv;
+
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqliteSynchronous};
@@ -89,6 +90,9 @@ async fn main() -> anyhow::Result<()> {
 
     // API
     let app = Router::new()
+        .route("/", get(index))
+        .route("/app.js", get(app_js))
+        .route("/styles.css", get(styles_css))
         .route("/health", get(health))
         .route("/checks", post(create_check).get(list_checks))
         .route("/checks/:id/results", get(list_results))
@@ -115,6 +119,26 @@ async fn run_migrations(db: &Db) -> anyhow::Result<()> {
 
 async fn health() -> &'static str {
     "ok"
+}
+
+async fn index() -> Html<&'static str> {
+    Html(include_str!("web/index.html"))
+}
+
+async fn app_js() -> impl IntoResponse {
+    (
+        StatusCode::OK,
+        [(axum::http::header::CONTENT_TYPE, "text/javascript")],
+        include_str!("web/app.js"),
+    )
+}
+
+async fn styles_css() -> impl IntoResponse {
+    (
+        StatusCode::OK,
+        [(axum::http::header::CONTENT_TYPE, "text/css")],
+        include_str!("web/styles.css"),
+    )
 }
 
 async fn create_check(
