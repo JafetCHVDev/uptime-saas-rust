@@ -1,19 +1,24 @@
 use axum::{
     extract::{Path, State},
     http::StatusCode,
+    response::{Html, IntoResponse},
     routing::{get, post},
     Json, Router,
 };
 use chrono::{DateTime, Utc};
+use reqwest::Url;
 use serde::{Deserialize, Serialize};
-use sqlx::{sqlite::SqlitePoolOptions, Pool, Sqlite};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqliteSynchronous};
-use std::{str::FromStr, sync::Arc, time::Duration};
+use sqlx::{sqlite::SqlitePoolOptions, Pool, Sqlite};
+use std::env;
+use std::{
+    str::FromStr,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 use tokio::time::sleep;
 use tracing::{error, info};
 use uuid::Uuid;
-use dotenvy::dotenv;
-use std::env;
 
 type Db = Pool<Sqlite>;
 
@@ -84,6 +89,9 @@ async fn main() -> anyhow::Result<()> {
 
     // API
     let app = Router::new()
+        .route("/", get(index))
+        .route("/app.js", get(app_js))
+        .route("/styles.css", get(styles_css))
         .route("/health", get(health))
         .route("/checks", post(create_check).get(list_checks))
         .route("/checks/:id/results", get(list_results))
@@ -112,12 +120,44 @@ async fn health() -> &'static str {
     "ok"
 }
 
+async fn index() -> Html<&'static str> {
+    Html(include_str!("web/index.html"))
+}
+
+async fn app_js() -> impl IntoResponse {
+    (
+        StatusCode::OK,
+        [(axum::http::header::CONTENT_TYPE, "text/javascript")],
+        include_str!("web/app.js"),
+    )
+}
+
+async fn styles_css() -> impl IntoResponse {
+    (
+        StatusCode::OK,
+        [(axum::http::header::CONTENT_TYPE, "text/css")],
+        include_str!("web/styles.css"),
+    )
+}
+
 async fn create_check(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<CreateCheckRequest>,
 ) -> Result<(StatusCode, Json<CreateCheckResponse>), (StatusCode, String)> {
     if payload.interval_seconds < 10 {
-        return Err((StatusCode::BAD_REQUEST, "interval_seconds mínimo: 10".into()));
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "interval_seconds mínimo: 10".into(),
+        ));
+    }
+
+    let url = Url::parse(&payload.url)
+        .map_err(|_| (StatusCode::BAD_REQUEST, "url inválida".to_string()))?;
+    if url.scheme() != "http" && url.scheme() != "https" {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "url debe usar http/https".to_string(),
+        ));
     }
 
     let id = Uuid::new_v4().to_string();
@@ -171,7 +211,10 @@ fn internal_error(e: sqlx::Error) -> (StatusCode, String) {
 }
 
 async fn worker_loop(state: Arc<AppState>) {
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .expect("Failed to build HTTP client");
 
     let tg_token = env::var("TELEGRAM_BOT_TOKEN").ok();
     let tg_chat_id = env::var("TELEGRAM_CHAT_ID").ok();
@@ -189,19 +232,47 @@ async fn worker_loop(state: Arc<AppState>) {
             }
         };
 
+        let now = Utc::now();
+
         for c in checks {
+            if !should_run_check(&c, now) {
+                continue;
+            }
+
+            let start = Instant::now();
             let resp = client.get(&c.url).send().await;
-            let status = if resp.is_ok() { "UP" } else { "DOWN" }.to_string();
+            let (status, http_status, latency_ms, error_message) = match resp {
+                Ok(resp) => (
+                    if resp.status().is_success() {
+                        "UP"
+                    } else {
+                        "DOWN"
+                    }
+                    .to_string(),
+                    Some(resp.status().as_u16() as i64),
+                    Some(start.elapsed().as_millis() as i64),
+                    None,
+                ),
+                Err(err) => (
+                    "DOWN".to_string(),
+                    None,
+                    Some(start.elapsed().as_millis() as i64),
+                    Some(err.to_string()),
+                ),
+            };
 
             let previous = c.last_status.clone().unwrap_or_else(|| "UNKNOWN".into());
             let checked_at = Utc::now().to_rfc3339();
 
             sqlx::query(
-                "INSERT INTO check_results (check_id, checked_at, status) VALUES (?, ?, ?)",
+                "INSERT INTO check_results (check_id, checked_at, status, http_status, latency_ms, error) VALUES (?, ?, ?, ?, ?, ?)",
             )
             .bind(&c.id)
             .bind(&checked_at)
             .bind(&status)
+            .bind(http_status)
+            .bind(latency_ms)
+            .bind(error_message.as_deref())
             .execute(&state.db)
             .await
             .ok();
@@ -216,8 +287,7 @@ async fn worker_loop(state: Arc<AppState>) {
                         c.name, previous, status, c.url
                     );
 
-                    let url =
-                        format!("https://api.telegram.org/bot{}/sendMessage", token);
+                    let url = format!("https://api.telegram.org/bot{}/sendMessage", token);
 
                     client
                         .post(url)
@@ -231,17 +301,29 @@ async fn worker_loop(state: Arc<AppState>) {
                 }
             }
 
-            sqlx::query(
-                "UPDATE checks SET last_status = ?, last_checked_at = ? WHERE id = ?",
-            )
-            .bind(&status)
-            .bind(&checked_at)
-            .bind(&c.id)
-            .execute(&state.db)
-            .await
-            .ok();
+            sqlx::query("UPDATE checks SET last_status = ?, last_checked_at = ? WHERE id = ?")
+                .bind(&status)
+                .bind(&checked_at)
+                .bind(&c.id)
+                .execute(&state.db)
+                .await
+                .ok();
         }
 
         sleep(Duration::from_secs(5)).await;
+    }
+}
+
+fn should_run_check(check: &CheckRow, now: DateTime<Utc>) -> bool {
+    match &check.last_checked_at {
+        None => true,
+        Some(last_checked_at) => {
+            let parsed =
+                DateTime::parse_from_rfc3339(last_checked_at).map(|dt| dt.with_timezone(&Utc));
+            match parsed {
+                Ok(last) => now.signed_duration_since(last).num_seconds() >= check.interval_seconds,
+                Err(_) => true,
+            }
+        }
     }
 }

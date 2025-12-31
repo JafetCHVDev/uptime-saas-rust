@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Uptime SaaS</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="app">
+      <header class="header">
+        <div>
+          <p class="eyebrow">Uptime SaaS</p>
+          <h1>Monitoreo simple y en tiempo real</h1>
+          <p class="subtitle">
+            Crea checks, revisa estados y consulta historial sin salir de esta
+            página.
+          </p>
+        </div>
+        <div class="status-card" id="statusCard">
+          <p class="label">Estado del sistema</p>
+          <p class="value" id="healthValue">Comprobando...</p>
+        </div>
+      </header>
+
+      <section class="grid">
+        <div class="panel">
+          <h2>Crear nuevo check</h2>
+          <form id="checkForm">
+            <label>
+              Nombre
+              <input name="name" placeholder="Mi sitio" required />
+            </label>
+            <label>
+              URL
+              <input
+                name="url"
+                placeholder="https://example.com"
+                type="url"
+                required
+              />
+            </label>
+            <div class="row">
+              <label>
+                Intervalo (segundos)
+                <input
+                  name="interval_seconds"
+                  placeholder="60"
+                  type="number"
+                  min="10"
+                  value="60"
+                  required
+                />
+              </label>
+              <label>
+                Email (opcional)
+                <input name="alert_email" placeholder="correo@dominio.com" />
+              </label>
+            </div>
+            <button type="submit">Crear check</button>
+            <p class="form-status" id="formStatus"></p>
+          </form>
+        </div>
+
+        <div class="panel">
+          <h2>Checks activos</h2>
+          <ul class="check-list" id="checkList"></ul>
+        </div>
+
+        <div class="panel">
+          <h2>Resultados recientes</h2>
+          <div class="results" id="results"></div>
+        </div>
+      </section>
+    </div>
+
+    <script src="/app.js"></script>
+  </body>
+</html>
