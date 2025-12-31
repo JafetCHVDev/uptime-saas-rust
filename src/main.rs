@@ -96,6 +96,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/health", get(health))
         .route("/checks", post(create_check).get(list_checks))
         .route("/checks/:id/results", get(list_results))
+        .fallback(get(fallback))
         .with_state(state);
 
     let addr = "0.0.0.0:8080";
@@ -140,6 +141,17 @@ async fn styles_css() -> impl IntoResponse {
         include_str!("web/styles.css"),
     )
 }
+
+
+async fn fallback(uri: axum::http::Uri) -> impl IntoResponse {
+    match uri.path() {
+        path if path.ends_with("app.js") => app_js().await.into_response(),
+        path if path.ends_with("styles.css") => styles_css().await.into_response(),
+        _ => index().await.into_response(),
+    }
+}
+
+=======
 
 async fn create_check(
     State(state): State<Arc<AppState>>,
